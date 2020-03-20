@@ -1,0 +1,118 @@
+/*
+Script: No-Conflict Asset Reservations
+Author: Kamille Parks
+
+This script allows you to reserve an asset for a specified time period, but only during a between dates when 
+there are no existing reservations for that asset. Follow the prompts to select a time period, and then selct 
+from a auto-filtered list of the assets available for that time period. You'll never have to worry about 
+double-booking an asset again!
+
+Note: This script was heavily inspired by Jeremy Oglesby's "Check for Speaker Schedule Conflicts" script. 
+As such, this script uses a similar structure for variables, defined as BaseSpecificNames.
+
+*/
+
+// Begin BASE SPECIFIC NAMES Section (adjust these values to fit your base!)
+
+const BaseSpecificNames = {
+    // Reservations Table
+    reservationsTable: "Reservations", // name of the [RESERVATIONS] table
+    assetField: "Room", // name of the link-type field connecting to the [ASSETS] table
+    startField: "Start Date",
+    endField: "End Date",
+    personField: "Customer Name", // name of the link-type field connection to the [PEOPLE] table
+
+    // Assets Table
+    assetsTable: "Rooms", // name of the [ASSETS] table
+    assetName: "Room #", // name of the primary field in the [ASSETS] table
+
+    // People Table
+    peopleTable: "People", // name of the [PEOPLE] table
+    peopleName: "Name" // name of the primary field in the [PEOPLE] table
+}
+
+// End BASE SPECIFIC NAMES Section (everything below should work without the need for further adjustment.)
+
+
+output.markdown(`# Schedule a New ${BaseSpecificNames.assetField} Reservation`);
+
+const peopleTable = base.getTable(BaseSpecificNames.peopleTable);
+
+let person = await input.recordAsync("Reserve a " + BaseSpecificNames.assetField + " For:", peopleTable, {shouldAllowCreatingRecord: true});
+
+let start = await input.textAsync("Start Date (YYYY-MM-DD):");
+let startDate = new Date(start).toISOString();
+
+let end = await input.textAsync("End Date (YYYY-MM-DD):");
+let endDate = new Date(end).toISOString();
+
+const reservationsTable = base.getTable(BaseSpecificNames.reservationsTable);
+
+let result = await reservationsTable.selectRecordsAsync();
+
+let allReservations = result.records;
+
+let conflicts = [];
+
+for (var i = 0; i < allReservations.length; i++) {
+    let compareStart = new Date(allReservations[i].getCellValue(BaseSpecificNames.startField)).toISOString();
+    let compareEnd = new Date(allReservations[i].getCellValue(BaseSpecificNames.endField)).toISOString();
+
+    if ((startDate >= compareStart && startDate <= compareEnd) || (startDate <= compareStart && endDate >= compareEnd)) {
+        conflicts.push(allReservations[i].id);
+    };
+}
+
+let unavailableAssets = [];
+
+for (var i = 0; i < conflicts.length; i++) {
+    let reservation = result.getRecord(conflicts[i]);
+    let asset = reservation.getCellValueAsString(BaseSpecificNames.assetField);
+    unavailableAssets.push(asset);
+};
+/* Output a table of Unavailable Assets
+if (unavailableAsssets.length >0) {
+    output.markdown(`### Unavailable ${BaseSpecificNames.assetField}`);
+    output.table(unavailableAssets);
+}
+*/
+const assetsTable = base.getTable(BaseSpecificNames.assetsTable);
+
+const assets = await assetsTable.selectRecordsAsync({sorts: [{field: BaseSpecificNames.assetName}]});
+
+let availableAssets = assets.records.filter(record => {
+    let assetName = record.getCellValue(BaseSpecificNames.assetName);
+    return assetName !== null && ! unavailableAssets.includes(assetName);
+});
+
+if (availableAssets.length >0) {
+
+    /*Output a table of availableAssets
+    output.markdown(`#### Available ${BaseSpecificNames.assetField}`);
+    output.table(availableAssets);
+    */
+    
+    let selectedAsset = await input.recordAsync("Requested " + BaseSpecificNames.assetField + ":", availableAssets);
+    
+    if (selectedAsset) {
+        output.markdown(`You are about to reserve **${selectedAsset.name}** for **${person.name}** from **${start}** to **${end}**`);
+
+        let confirmed = await input.buttonsAsync('',[{label: 'Confirm Reservation', value: 'true', variant: 'primary'}]);
+
+        if (confirmed) {
+            await reservationsTable.createRecordAsync({
+                    [BaseSpecificNames.assetField]: [{id: selectedAsset.id}],
+                    [BaseSpecificNames.personField]: [{id: person.id}],
+                    [BaseSpecificNames.startField]: startDate,
+                    [BaseSpecificNames.endField]: endDate
+                })
+            output.markdown(`*Your reservation was booked successfully. Please run the script again to book another reservation.*`)
+        }
+    } else {
+        output.markdown(`#### No ${BaseSpecificNames.assetField} was selected. Please run the script again and select a ${BaseSpecificNames.assetField}.`)
+    }
+}
+
+else {
+    output.markdown(`#### Unfortunately, there are no available ${BaseSpecificNames.assetsTable} for this date range. Please run the script again and select new dates.`)
+}
