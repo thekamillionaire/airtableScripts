@@ -1,0 +1,354 @@
+/*
+Script: No-Conflict Appointment Scheduler
+Author: Kamille Parks
+
+This is the sister-script to my "No-Conflict Asset Reservations" script. This script performs a similar function, 
+however this one is built for appointment/reservations which start and end on the same day. It allows users to
+select a service, pick a qualified agent/employee to perform that service, and then select upcoming dates and times
+which work for that agent. The script opts to use buttons as opposed to text box inputs to reduce human error in
+typing in correctly formatted date/time strings. The script prevents double-booking an agent by filtering out time
+periods and even whole days when they are already scheduled for another appointment.
+
+*/
+
+// BASE SPECIFIC NAMES Section
+const BaseSpecificNames = {
+    // appointments Table
+    appointmentsTable: "Appointments", // name of the [APPOINTMENTS] table
+    agentField: "Stylist", // name of the link-type field connecting to the [AGENTS] table
+    startField: "Start Date",
+    endField: "End Date",
+    personField: "Customer", // name of the link-type field connection to the [PEOPLE] table
+    serviceField: "Service",
+
+    // Agents Table
+    agentsTable: "Stylists", // name of the [AGENTS] table
+    agentName: "Name", // name of the primary field in the [AGENTS] table
+    appointmentsField: "Appointments",
+    scheduleField: "Schedule",
+    servicesField: "Services",
+
+    // People Table
+    peopleTable: "Customers", // name of the [PEOPLE] table
+    peopleName: "Name", // name of the primary field in the [PEOPLE] table
+    emailField: "Email",
+    phoneField: "Phone",
+
+    // Services Table
+    servicesTable: "Services", // name of the [SERVICES] table
+    servicesName: "Name", // name of the primary field in the [SERVICES] table
+    durationField: "Time Estimate (min)",
+}
+
+// SCRIPT SETTINGS Section: edit the values of the two arrays below to adjust the available start times and event durations
+const allowedBusinessHours = [
+    '08:00 am', '05:00 pm'
+]
+
+const startTimeInterval = 30; // enter a time in MINUTES.
+
+const dateSearchInterval = {
+    label: 'two weeks', // enter a human-friendly label
+    value: 15 // enter the number of days + 1 for your prefered date search scope
+}
+
+const defaultBusinessDays = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']; // if an agent doesn't have a custome schedule, default selectable days to a company-wide set
+
+/*
+ * Do NOT edit below this line
+ * 
+ * 
+ */
+
+// Variable Declarations
+let startDate, endDate, startYear, startMonth, startDay, startHour, startMinute, startMeridiem;
+
+const daysOfWeek = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+const businessHours = [];
+const allStartTimes = [];
+
+const peopleTable = base.getTable(BaseSpecificNames.peopleTable);
+const peopleQuery = await peopleTable.selectRecordsAsync();
+const allPeople = peopleQuery.records;
+
+const appointmentsTable = base.getTable(BaseSpecificNames.appointmentsTable);
+const appointmentsQuery = await appointmentsTable.selectRecordsAsync();
+const allAppointments = appointmentsQuery.records;
+
+const agentsTable = base.getTable(BaseSpecificNames.agentsTable);
+const agentsQuery = await agentsTable.selectRecordsAsync({sorts: [{field: BaseSpecificNames.agentName}]});
+const allAgents = agentsQuery.records;
+
+const servicesTable = base.getTable(BaseSpecificNames.servicesTable);
+const servicesQuery = await servicesTable.selectRecordsAsync({sorts: [{field: BaseSpecificNames.servicesName}]});
+const allServices = servicesQuery.records;
+
+let conflicts, unavailableAgents, availableAgents;
+let overlaps = [];
+let altered = [];
+let unaltered = [];
+let sameDayappointments;
+let filteredTimeOptions;
+
+// Get usable business hours
+for (let x of allowedBusinessHours) {
+    let split = x.split(/:| /);
+    let hour = Number(split[0]);
+    let minute = Number(split[1]);
+    if (split[2] == 'pm' && hour !== 12 ) { hour += 12; }
+    businessHours.push([hour, minute]);
+}
+
+// Split start times
+const intervalTimesBegin = new Date(2020,0,1,businessHours.slice(0)[0].slice(0)[0],businessHours.slice(0)[0].slice(0)[1],0,0);
+const intervalTimesEnd = new Date(2020,0,1,businessHours.slice(1)[0].slice(0)[0],businessHours.slice(0)[0].slice(0)[1],0,0);
+
+let maxTimeInMinutes = (businessHours.slice(1)[0].slice(0)[0] * 60) + businessHours.slice(1)[0].slice(1)[0];
+
+var intervalTimesLoopX = new Date(intervalTimesBegin);
+
+const miscAllowedStartTimes = [intervalTimesBegin];
+
+while (intervalTimesLoopX < intervalTimesEnd) {
+    let current = new Date(intervalTimesLoopX.setTime(intervalTimesLoopX.getTime() + startTimeInterval*60000));
+    miscAllowedStartTimes.push(current);
+}
+
+for (let x of miscAllowedStartTimes) {
+    let hour = x.getHours();
+    let minute = x.getMinutes();
+    let displayHour = hour;
+    let meridiem = "am";
+    if (hour > 11 ) { 
+        if (hour != 12) {displayHour = hour-12;};
+        meridiem = "pm"
+    }
+    let displayMinute = minute.toString();
+    if (minute < 10) {displayMinute="0"+minute}
+    let hoursxminutes = (hour * 60) + minute;
+    let displayTime = displayHour + ":" + displayMinute + " " + meridiem
+    allStartTimes.push({label: displayTime, value: [hour,minute], hoursxminutes: hoursxminutes})
+}
+
+// Create individual input button options for each value from the array above
+let startTimeOptions = []
+for (let option of allStartTimes) { startTimeOptions.push({label: option.label, value: option.value}) }
+
+// Functions Section
+
+async function splitStartDateInput(startDateInput) {
+    let startDateInputSplit = startDateInput.split(/\D/);
+
+    startYear = Number(startDateInputSplit[0]);
+    startMonth = Number(startDateInputSplit[1])-1;
+    startDay = Number(startDateInputSplit[2]);
+}
+
+async function constructStartDate(startTimeInput) {
+    startHour = Number(startTimeInput[0]);
+    startMinute = Number(startTimeInput[1]);
+
+    startDate = new Date(startYear, startMonth, startDay, startHour, startMinute);
+}
+
+async function findSameDayappointments(duration, selectedAgent, startYear, startMonth, startDay, filteredTimeOptions) {
+    // Get any appointments that stylist has for that day
+    sameDayappointments = allAppointments.filter(appointment => {
+        let theAgent = appointment.getCellValueAsString(BaseSpecificNames.agentField);
+        let theDate = new Date(appointment.getCellValue(BaseSpecificNames.startField));
+        return theAgent.includes(selectedAgent.name) && startYear == theDate.getFullYear() && startMonth == theDate.getMonth() && startDay == theDate.getDate();
+    })
+    // For each existing appointment for that Agent on the selected day, get the start and end times
+    let unavailableTimes = [];
+
+    for (let appointment of sameDayappointments) {
+        let start = new Date(appointment.getCellValue(BaseSpecificNames.startField));
+        let end = new Date(appointment.getCellValue(BaseSpecificNames.endField));
+        unavailableTimes.push([start, end])
+    }
+
+    // Find start time options that would cause the new appointment to overlap with an existing record
+    let eliminatedStartTimes = [];
+
+    for (let option of allStartTimes) {
+        startHour = Number(option.value[0]);
+        startMinute = Number(option.value[1]);
+
+        let thisStart = new Date(startYear, startMonth, startDay, startHour, startMinute);
+        let thisEnd = new Date(thisStart.getTime() + duration*1000);
+        let thisOffest = thisStart.getTimezoneOffset();
+
+        for (let appointment of sameDayappointments) {
+            let compareStartInitial = new Date(appointment.getCellValue(BaseSpecificNames.startField));
+            let compareStart = new Date(compareStartInitial.getTime() + thisOffest*60000);
+            let compareEndInitial = new Date(appointment.getCellValue(BaseSpecificNames.endField));
+            let compareEnd = new Date(compareEndInitial.getTime() + thisOffest*60000);
+
+            if ((compareStart >= thisStart && compareStart <= thisEnd) || thisStart >= compareStart && thisStart <= compareEnd || (compareStart <= thisStart && compareEnd >= thisEnd)) {
+                eliminatedStartTimes.push(option);
+            };
+        }
+    }
+
+    // Filter out the start time options which would end the event after business hours are over or which were found to cause overlapping appointments
+    let filteredStartTimes = allStartTimes.filter(option => {
+        let x = option.hoursxminutes;
+        return ((x + duration/60) <= maxTimeInMinutes && ! eliminatedStartTimes.includes(option));
+    })
+    
+    for (let option of filteredStartTimes) { filteredTimeOptions.push({label: option.label, value: option.value}) }
+}
+
+// Begin Script
+output.markdown(`# Schedule a New Appointment`);
+// Using the email address as a unique identifier, check if this is an existing customer
+let email = await input.textAsync(BaseSpecificNames.personField + ' Email:');
+let matchingExistingPeople = allPeople.filter(search => {
+    let compareEmail = search.getCellValueAsString(BaseSpecificNames.emailField);
+    return email == compareEmail;
+})
+let person, personID
+if (matchingExistingPeople.length > 0) {
+    // Select the existing customer with this email
+    person = matchingExistingPeople[0];
+    output.markdown(`#### Welcome back, ${person.name}.`)
+    personID = person.id
+} else {
+    // Create a new customer record
+    let name = await input.textAsync(BaseSpecificNames.personField + ' Name:');
+    let phone = await input.textAsync(BaseSpecificNames.personField + ' Phone:');
+    personID = await peopleTable.createRecordAsync({
+        [BaseSpecificNames.peopleName]: name,
+        [BaseSpecificNames.emailField]: email,
+        [BaseSpecificNames.phoneField]: phone
+    })
+}
+
+// Prompt the user to select a service to be scheduled
+let selectedService = await input.recordAsync('Requested ' + BaseSpecificNames.serviceField + ':', servicesTable);
+let duration = selectedService.getCellValue(BaseSpecificNames.durationField);
+
+// Filter out all the agents who don't provide the selected service
+let qualifiedAgents = allAgents.filter(record => {
+    let servicesOffered = record.getCellValueAsString(BaseSpecificNames.servicesField);
+    return servicesOffered.includes(selectedService.name);
+});
+
+// Prompt the user to select an agent from the filtered set
+let selectedAgent = await input.recordAsync(BaseSpecificNames.agentField + ':', qualifiedAgents);
+
+// Identify the selected agent's work schedule
+let customSchedule = selectedAgent.getCellValueAsString(BaseSpecificNames.scheduleField);
+let scheduleUsed
+let scheduleString
+
+if (customSchedule.length > 0) {
+    scheduleUsed = customSchedule.toString().replace(/ /g, '').split(',');
+    scheduleString = customSchedule
+} else {
+    scheduleUsed = defaultBusinessDays;
+    scheduleString = scheduleUsed.toString().replace(/,/g, ', ')
+}
+
+let scheduleArray = [];
+for (let day of scheduleUsed) { scheduleArray.push(daysOfWeek.indexOf(day)) }
+
+// Find next available dates where that stylist will be working based on the schedule
+output.markdown(`**NOTE:** ${selectedAgent.name} works on the following days of the week: ${scheduleString}.`);
+output.markdown(`*Searching availability for the next ${dateSearchInterval.label}...*`);
+
+let now = new Date();
+let loopEnd = new Date();
+loopEnd.setDate(now.getDate() + dateSearchInterval.value) // default at two weeks
+
+let loopDates = [];
+//loopdates.push(loopCurrent); NOTE: uncomment this to allow same-day scheduling
+
+while (now <= loopEnd) {
+    let current = now.setDate(now.getDate() + 1);
+    let loopCurrent = new Date(current);
+    loopCurrent.setHours(0);
+    loopCurrent.setMinutes(0);
+    loopCurrent.setSeconds(0);
+    loopCurrent.setMilliseconds(0);
+    loopDates.push(loopCurrent);
+}
+
+loopDates = loopDates.filter(day => { return scheduleArray.includes(day.getDay()) });
+let filteredLoopDates = [];
+
+for (let date of loopDates) {
+    let startYear = date.getFullYear();
+    let startMonth = date.getMonth();
+    let startDay = date.getDate();
+    let filteredTimeOptions = [];
+
+    // Run the function to retrive upcoming dates the selected Agent is available to complete the service
+    findSameDayappointments(duration, selectedAgent, startYear, startMonth, startDay, filteredTimeOptions);
+    
+    if (filteredTimeOptions.length > 0) { filteredLoopDates.push(date) }
+}
+
+let dateOptions = [];
+for (let option of filteredLoopDates) { dateOptions.push({label: option.toDateString(), value: option}) };
+
+if (dateOptions.length > 0) {
+    let startDateInput = await input.buttonsAsync('Date:', dateOptions);
+
+    startYear = startDateInput.getFullYear();
+    startMonth = startDateInput.getMonth();
+    startDay = startDateInput.getDate();
+
+    // Run the function to retrive the times the selected Agent is available for the selected date
+    filteredTimeOptions = [];
+    findSameDayappointments(duration, selectedAgent, startYear, startMonth, startDay, filteredTimeOptions);
+
+    if (filteredTimeOptions.length > 0) {
+        // Prompt the user to select a start time
+        let startTimeInput = await input.buttonsAsync('Start Time:', filteredTimeOptions);
+
+        constructStartDate(startTimeInput);
+
+        // @ts-ignore
+        let endDate = new Date(startDate.getTime() + duration*1000)
+
+        // @ts-ignore
+        let timeOffset = startDate.getTimezoneOffset();
+
+        // @ts-ignore
+        let actualStart = new Date(startDate.getTime() - timeOffset*60000);
+        let actualEnd = new Date(endDate.getTime() - timeOffset*60000);
+
+        output.markdown('---');
+        output.markdown(`*Please confirm that the details below are accurate:*`);
+
+        let sessionDetails = {
+            Service: selectedService.name,
+            [BaseSpecificNames.agentField]: selectedAgent.name, 
+            // @ts-ignore
+            Start: startDate.toLocaleString(), 
+            End: endDate.toLocaleString()
+        }
+
+        output.table(sessionDetails)
+
+        let confirmed = await input.buttonsAsync('',[{label: 'Confirm!', value: 'true', variant: 'primary'}]);
+
+        if (confirmed) {
+            await appointmentsTable.createRecordAsync({
+                [BaseSpecificNames.agentField]: [{id: selectedAgent.id}],
+                [BaseSpecificNames.serviceField]: [{id: selectedService.id}],
+                [BaseSpecificNames.startField]: actualStart,
+                [BaseSpecificNames.endField]: actualEnd,
+                [BaseSpecificNames.personField]: [{id: personID}]
+            })
+            output.markdown(`#### Your appointment was booked successfully`);
+            output.markdown(`*Please run the script again to book another appointment.*`);
+        }
+    } else {
+        output.markdown(`#### Unfortunately, there are no available appointment times for ${startDateInput.toDateString()}. Please run the script again and select a new date.`)
+    }
+} else {
+    output.markdown(`#### Unfortunately, ${selectedAgent.name} has no availability within the next ${dateSearchInterval.label}. Please run the script again to select another ${BaseSpecificNames.agentField}.`)
+}
