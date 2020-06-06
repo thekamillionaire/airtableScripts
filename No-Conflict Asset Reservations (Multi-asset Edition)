@@ -65,8 +65,10 @@ let unavailableAssets = [];
 
 for (var i = 0; i < conflicts.length; i++) {
     let reservation = result.getRecord(conflicts[i]);
-    let asset = reservation.getCellValueAsString(BaseSpecificNames.assetField);
-    unavailableAssets.push(asset);
+    let assets = reservation.getCellValue(BaseSpecificNames.assetField);
+    for (let record of assets) {
+        unavailableAssets.push(record);
+    }
 };
 /* Output a table of Unavailable Assets
 if (unavailableAsssets.length >0) {
@@ -80,7 +82,7 @@ const assets = await assetsTable.selectRecordsAsync({sorts: [{field: BaseSpecifi
 
 let availableAssets = assets.records.filter(record => {
     let assetName = record.getCellValue(BaseSpecificNames.assetName);
-    return assetName !== null && ! unavailableAssets.includes(assetName);
+    return assetName !== null && ! unavailableAssets.map(x => x.name).includes(record.name);
 });
 
 if (availableAssets.length >0) {
