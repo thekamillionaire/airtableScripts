@@ -2,7 +2,7 @@
 Script Name:    Metadata Helper: Field Name Find & Replace
 Script Type:    Script Extension only
 Author:         Kamille Parks
-Date:           2026-02-25
+Date:           2026-02-27
 */
 
 const settings = input.config({
@@ -44,7 +44,6 @@ const recordsQuery = await fieldsView.selectRecordsAsync({fields: [tableIdField,
 const {records} = recordsQuery
 
 let fieldUpdates = records.map(r => ({
-    recordId: r.id,
     tableId: r.getCellValueAsString(tableIdField),
     fieldId: r.getCellValueAsString(fieldIdField),
     currentName: r.getCellValueAsString(fieldNameField),
@@ -58,11 +57,13 @@ let processFields = true
 
 while (processFields == true) {
     output.clear()
+    output.markdown("### 1️⃣ Propose Modifications")
     let modifiedCount = fieldUpdates.filter(f => f.isModified).length
     if(modifiedCount) {
+        output.markdown("**Proposed Changes**")
         output.table(fieldUpdates)
     }
-    const operation = await input.buttonsAsync("What type of renaming would you like to do?", [
+    const operation = await input.buttonsAsync("Pick an operation (this will repeat until CONFIRM is selected)", [
         {label: "Find & Replace", value: "replace"},
         {label: "Add Prefix", value: "prefix"},
         {label: "Add Suffix", value: "suffix"},
@@ -110,6 +111,8 @@ while (processFields == true) {
 }
 
 output.clear()
+output.markdown("### 2️⃣ Confirm Changes")
+output.markdown("**Proposed Changes**")
 
 let modifiedFields = fieldUpdates.filter(f => f.isModified)
 
@@ -133,13 +136,13 @@ async function renameFields(props) {
         output.markdown(`⏳ Renaming ${modifiedFields.length} fields`)
 
         while (modifiedFields.length) {
-            let table = base.getTable(modifiedFields[0].tableId)
             let batch = modifiedFields[0]
+            let table = base.getTable(batch.tableId)
             let field = table.getField(batch.fieldId)
             if (field) {
                 await field.updateNameAsync(batch.proposedName)
             }
-            modifiedFields = modifiedFields.filter(f => f.id !== batch.id)
+            modifiedFields = modifiedFields.filter(f => f.fieldId !== batch.fieldId)
         }
     }
 }
